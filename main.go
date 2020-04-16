@@ -11,6 +11,7 @@ type OccurenceCounter struct {
 	v   map[uint32]int
 	mux sync.Mutex
 }
+
 func (c *OccurenceCounter) Inc(key uint32) {
 	c.mux.Lock()
 	c.v[key]++
@@ -22,36 +23,41 @@ func (c *OccurenceCounter) Value(key uint32) int {
 	defer c.mux.Unlock()
 	return c.v[key]
 }
-func (c *OccurenceCounter) Clear(){
+func (c *OccurenceCounter) Values(key uint32) int {
+	c.mux.Lock()
+	defer c.mux.Unlock()
+	return c.v[key]
+}
+func (c *OccurenceCounter) Clear() {
 	c.mux.Lock()
 	c.v = make(map[uint32]int)
 	c.mux.Unlock()
 }
 
-
-func CountOccurance(i uint32, m *OccurenceCounter){
-		m.Inc(i)
+func CountOccurance(i uint32, m *OccurenceCounter) {
+	m.Inc(i)
 }
 
 
-func main(){
+func main() {
+
+	ticker := time.NewTicker(5 * time.Second)
+	quit := make(chan struct{})
 	oc := OccurenceCounter{v: make(map[uint32]int)}
-	tick := 0
-	start := time.Now()
+
+	go func(mx *OccurenceCounter) {
+		for {
+			select {
+			case <-ticker.C:
+				fmt.Println(mx.Value(uint32(40)))
+			case <-quit:
+				ticker.Stop()
+				return
+			}
+		}
+	}(&oc)
 	for {
 		theInt := uint32(rand.Intn(100))
-		go CountOccurance(theInt,&oc)
-		tick ++
-		if tick == 300000{
-			elapsed := time.Since(start)
-			fmt.Println(elapsed)
-			cleanStart := time.Now()
-			oc.Clear()
-			cleanElapsed := time.Since(cleanStart)
-			fmt.Println(cleanElapsed)
-			tick = 0
-		}
-
+		go CountOccurance(theInt, &oc)
 	}
-
 }
