@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -23,10 +26,21 @@ func (c *OccurenceCounter) Value(key uint32) int {
 	defer c.mux.Unlock()
 	return c.v[key]
 }
-func (c *OccurenceCounter) Values(key uint32) int {
+func (c *OccurenceCounter) Values() map[uint32]int {
 	c.mux.Lock()
 	defer c.mux.Unlock()
-	return c.v[key]
+
+	// be able to return a current state of the mutex
+	// in copying the values into a new map
+
+	theMap := map[uint32]int{}
+	total := 0
+	for k, v := range c.v {
+		theMap[k] = v
+		total=total+v
+	}
+	return theMap
+
 }
 func (c *OccurenceCounter) Clear() {
 	c.mux.Lock()
@@ -38,26 +52,61 @@ func CountOccurance(i uint32, m *OccurenceCounter) {
 	m.Inc(i)
 }
 
-
 func main() {
-
 	ticker := time.NewTicker(5 * time.Second)
-	quit := make(chan struct{})
+	quitTicker := make(chan struct{})
+	sigs := make(chan os.Signal, 1)
+	done := make(chan bool, 1)
 	oc := OccurenceCounter{v: make(map[uint32]int)}
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	stopMainLoop := false
 
+	// have an interval to write to postgres
 	go func(mx *OccurenceCounter) {
+
 		for {
 			select {
 			case <-ticker.C:
-				fmt.Println(mx.Value(uint32(40)))
-			case <-quit:
+				// main logic
+				val := mx.Values()
+				fmt.Println(val)
+				mx.Clear()
+			case <-quitTicker:
+				stopMainLoop = true
+				fmt.Println("quitting...")
+				fmt.Println("If there is still data in OccurenceCounter write it away")
 				ticker.Stop()
 				return
 			}
 		}
 	}(&oc)
+
+	// main loop
 	for {
+
+		if stopMainLoop == true{
+			break
+		}
 		theInt := uint32(rand.Intn(100))
 		go CountOccurance(theInt, &oc)
+		go func() {
+			sig := <-sigs
+			fmt.Println()
+			fmt.Println(sig)
+			done <- true
+		}()
+
+		// where to exit the process so that no data is being lost?
+
+		go func(){
+			<-done
+			fmt.Println("exiting")
+			time.Sleep(5 * time.Second)
+			close(quitTicker)
+
+		}()
+
+
+
 	}
 }
