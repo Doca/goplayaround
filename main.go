@@ -2,12 +2,16 @@ package main
 
 import (
 	"fmt"
+	"github.com/gammazero/workerpool"
 	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+)
+const(
+	maxPoolSize = 1000
 )
 
 type OccurenceCounter struct {
@@ -51,12 +55,12 @@ func CountOccurance(i uint32, m *OccurenceCounter) {
 }
 
 func main() {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	ticker := time.NewTicker(5 * time.Second)
 	quitTicker := make(chan struct{})
-	sigs := make(chan os.Signal, 1)
 	done := make(chan bool, 1)
 	oc := OccurenceCounter{v: make(map[uint32]int)}
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	stopMainLoop := false
 
 	// have an interval to write to postgres
@@ -89,6 +93,11 @@ func main() {
 	}(&oc)
 
 	// main loop
+	wp := workerpool.New(maxPoolSize)
+	wp.Submit(func() {
+		fmt.Println("Test123")
+	})
+	wp.StopWait()
 	for {
 
 		if stopMainLoop == true{
