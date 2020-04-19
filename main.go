@@ -16,7 +16,7 @@ import (
 // go run --race main.go
 
 const (
-	maxPoolSize = 1000
+	maxPoolSize = 20
 )
 
 type OccurenceCounter struct {
