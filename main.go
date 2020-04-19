@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// This won't work
+// ERROR: race: limit on 8128 simultaneously alive goroutines is exceeded, dying
+// exit status 66
+// go run --race main.go
+
+const (
+	maxPoolSize = 1000
+)
+
 type OccurenceCounter struct {
 	v   map[uint32]int
 	mux sync.RWMutex
@@ -26,24 +35,45 @@ func (c *OccurenceCounter) Value(key uint32) int {
 	defer c.mux.RUnlock()
 	return c.v[key]
 }
-func (c *OccurenceCounter) Values() map[uint32]int {
+
+func (c *OccurenceCounter) Save() {
+	c.mux.Lock()
+	defer c.mux.Unlock()
+
+	// 1. In Go, Locks are not re-entrant...
+
+	total := c.agg()
+
+	// Simulates the save into PG
+	fmt.Println("Save into Postgres total:", total)
+
+	// cleaning up the mutex
+	c.clear()
+}
+
+func (c *OccurenceCounter) Total() int {
 	c.mux.RLock()
 	defer c.mux.RUnlock()
 
-	// be able to return a current state of the mutex
-	// in copying the values into a new map
-
-	theMap := map[uint32]int{}
-	for k, v := range c.v {
-		theMap[k] = v
-	}
-	return theMap
-
+	return c.agg()
 }
+
+func (c *OccurenceCounter) agg() int {
+	total := 0
+	for _, v := range c.v {
+		total = total + v
+	}
+	return total
+}
+
 func (c *OccurenceCounter) Clear() {
 	c.mux.Lock()
-	c.v = make(map[uint32]int)
+	c.clear()
 	c.mux.Unlock()
+}
+
+func (c *OccurenceCounter) clear() {
+	c.v = make(map[uint32]int)
 }
 
 func CountOccurance(i uint32, m *OccurenceCounter) {
@@ -51,69 +81,75 @@ func CountOccurance(i uint32, m *OccurenceCounter) {
 }
 
 func main() {
-	ticker := time.NewTicker(5 * time.Second)
-	quitTicker := make(chan struct{})
-	sigs := make(chan os.Signal, 1)
-	done := make(chan bool, 1)
-	oc := OccurenceCounter{v: make(map[uint32]int)}
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	stopMainLoop := false
 
-	// have an interval to write to postgres
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	ticker := time.NewTicker(2 * time.Second)
+	quitTicker := make(chan struct{})
+	flushDone := make(chan int)
+
+	oc := &OccurenceCounter{v: make(map[uint32]int)}
+
+	// Periodically write to Postgres.
 	go func(mx *OccurenceCounter) {
 		for {
 			select {
 			case <-ticker.C:
 				// main logic
-				val := mx.Values()
-				total := 0
-				for _, v := range val {
-					total = total + v
-				}
-
-
-				fmt.Println("total:",total)
-				// cleaning up the mutex
-				mx.Clear()
+				mx.Save()
 			case <-quitTicker:
-				stopMainLoop = true
-				fmt.Println("quitting...")
-				fmt.Println("If there is still data in OccurenceCounter write it away")
-				val := mx.Values()
-				fmt.Println(val)
 				ticker.Stop()
+
+				// Attempt one final save.
+				mx.Save()
+
+				// Signal final flush is completed.
+				close(flushDone)
 				return
 			}
 
 		}
-	}(&oc)
+	}(oc)
 
-	// main loop
-	for {
+	// Bound worker-pool with max goroutines.
+	sem := make(chan int, maxPoolSize)
 
-		if stopMainLoop == true{
-			break
+	go func() {
+		var myWG sync.WaitGroup
+		for {
+			select {
+			// Upon sigterm, start teardown.
+			case <-sigs:
+				// Wait for all worker items to finish.
+				myWG.Wait()
+
+				// Ask for tear down ticker.
+				close(quitTicker)
+				return
+			default:
+				// Otherwise, continue to enqueue.
+				myWG.Add(1)
+				sem <- 1
+				go func() {
+					defer myWG.Done()
+					enqueueTask(&myWG, oc)
+					<-sem
+				}()
+			}
 		}
-		theInt := uint32(rand.Intn(100))
-		go CountOccurance(theInt, &oc)
-		go func() {
-			sig := <-sigs
-			fmt.Println()
-			fmt.Println(sig)
-			done <- true
-		}()
+	}()
 
-		// where to exit the process so that no data is being lost?
+	// Wait for final flush from ticker tear down.
+	<-flushDone
 
-		go func(){
-			<-done
-			fmt.Println("exiting")
-			time.Sleep(5 * time.Second)
-			close(quitTicker)
+	// Ensure zero result.
+	fmt.Println("Final total: ", oc.Total())
 
-		}()
+	fmt.Println("Shutdown success...")
+}
 
-
-
-	}
+func enqueueTask(wg *sync.WaitGroup, oc *OccurenceCounter) {
+	theInt := uint32(rand.Intn(100))
+	CountOccurance(theInt, oc)
 }
