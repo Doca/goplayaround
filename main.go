@@ -12,7 +12,7 @@ import (
 
 type OccurenceCounter struct {
 	v   map[uint32]int
-	mux sync.Mutex
+	mux sync.RWMutex
 }
 
 func (c *OccurenceCounter) Inc(key uint32) {
@@ -22,22 +22,20 @@ func (c *OccurenceCounter) Inc(key uint32) {
 }
 
 func (c *OccurenceCounter) Value(key uint32) int {
-	c.mux.Lock()
-	defer c.mux.Unlock()
+	c.mux.RLock()
+	defer c.mux.RUnlock()
 	return c.v[key]
 }
 func (c *OccurenceCounter) Values() map[uint32]int {
-	c.mux.Lock()
-	defer c.mux.Unlock()
+	c.mux.RLock()
+	defer c.mux.RUnlock()
 
 	// be able to return a current state of the mutex
 	// in copying the values into a new map
 
 	theMap := map[uint32]int{}
-	total := 0
 	for k, v := range c.v {
 		theMap[k] = v
-		total=total+v
 	}
 	return theMap
 
@@ -63,21 +61,30 @@ func main() {
 
 	// have an interval to write to postgres
 	go func(mx *OccurenceCounter) {
-
 		for {
 			select {
 			case <-ticker.C:
 				// main logic
 				val := mx.Values()
-				fmt.Println(val)
+				total := 0
+				for _, v := range val {
+					total = total + v
+				}
+
+
+				fmt.Println("total:",total)
+				// cleaning up the mutex
 				mx.Clear()
 			case <-quitTicker:
 				stopMainLoop = true
 				fmt.Println("quitting...")
 				fmt.Println("If there is still data in OccurenceCounter write it away")
+				val := mx.Values()
+				fmt.Println(val)
 				ticker.Stop()
 				return
 			}
+
 		}
 	}(&oc)
 
